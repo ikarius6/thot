@@ -1,4 +1,4 @@
-# Thot - Private Image Gallery & Tagger
+# Thot - Private Image Gallery & Tagger (by Mr.Jack)
 
 Thot is a self-hosted image gallery and tagging application that uses local AI to analyze and organize your image collection.
 
@@ -9,6 +9,17 @@ Thot is a self-hosted image gallery and tagging application that uses local AI t
 - **Smart Search:** Search by tags, partial matches, or specific fields (e.g., `character:name`).
 - **Duplicate Detection:** Identifies duplicate images using perceptual hashing.
 - **Queue System:** Robust background processing for tagging large collections.
+
+## Screenshots
+
+![Demo 1](./demo1.png)
+*Tags generated*
+
+![Demo 2](./demo2.png)
+*Image gallery with search capabilities*
+
+![Demo 3](./demo3.png)
+*Queue system for auto-tagging*
 
 ## Prerequisites
 
