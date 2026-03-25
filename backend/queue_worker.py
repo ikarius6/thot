@@ -150,83 +150,101 @@ class TaggingQueue:
     def _worker_loop(self):
         """Main loop: pick next pending item, tag its hash, repeat."""
         while not self._stop_event.is_set():
-            self._pause_event.wait()
-
-            if self._stop_event.is_set():
-                break
-
-            db = SessionLocal()
-            image = None
-            item = None
             try:
-                item = db.query(TagQueue).filter(TagQueue.status == "pending").first()
-                if not item:
-                    self._state = "idle"
-                    self._current_image_id = None
-                    time.sleep(1) # Wait for new items
-                    continue
-                
-                self._state = "running"
-                item.status = "processing"
-                db.commit()
+                self._pause_event.wait()
 
-                image = db.query(Image).filter(Image.id == item.image_id).first()
-                if not image or not image.hash_id:
-                    item.status = "error"
-                    item.error_msg = "Image or hash not found"
-                    db.commit()
-                    continue
+                if self._stop_event.is_set():
+                    break
 
-                hash_entry = db.query(ImageHash).filter(ImageHash.id == image.hash_id).first()
-
-                # Skip if this hash already has tags (tagged by another duplicate)
-                if hash_entry and hash_entry.tags:
-                    item.status = "done"
-                    db.commit()
-                    print(f"Queue: Skipped image {image.id} — hash already tagged")
-                    continue
-
-                self._current_image_id = image.id
-            finally:
-                db.close()
-
-            # Do the actual tagging (slow, GPU-bound)
-            if image:
+                db = SessionLocal()
+                image = None
+                image_id = None
+                image_path = None
+                image_hash_id = None
                 try:
-                    tags = tag_image(image.path)
+                    item = db.query(TagQueue).filter(TagQueue.status == "pending").first()
+                    if not item:
+                        self._state = "idle"
+                        self._current_image_id = None
+                        time.sleep(1) # Wait for new items
+                        continue
+                    
+                    self._state = "running"
+                    item.status = "processing"
+                    db.commit()
 
-                    db2 = SessionLocal()
+                    image = db.query(Image).filter(Image.id == item.image_id).first()
+                    if not image or not image.hash_id:
+                        item.status = "error"
+                        item.error_msg = "Image or hash not found"
+                        db.commit()
+                        continue
+
+                    hash_entry = db.query(ImageHash).filter(ImageHash.id == image.hash_id).first()
+
+                    # Skip if this hash already has tags (tagged by another duplicate)
+                    if hash_entry and hash_entry.tags:
+                        item.status = "done"
+                        db.commit()
+                        print(f"Queue: Skipped image {image.id} — hash already tagged")
+                        continue
+
+                    # Cache values before closing the session to avoid detached instance issues
+                    image_id = image.id
+                    image_path = image.path
+                    image_hash_id = image.hash_id
+                    self._current_image_id = image_id
+                finally:
+                    db.close()
+
+                # Do the actual tagging (slow, GPU-bound)
+                if image_id:
                     try:
-                        # Write tags to the hash (shared by all duplicates)
-                        h = db2.query(ImageHash).filter(ImageHash.id == image.hash_id).first()
-                        if h:
-                            h.tags = tags
-                        # Mark queue item as done
-                        q_item = db2.query(TagQueue).filter(
-                            TagQueue.image_id == image.id, TagQueue.status == "processing"
-                        ).first()
-                        if q_item:
-                            q_item.status = "done"
-                        db2.commit()
+                        print(f"Queue: Tagging image {image_id}: {image_path}")
+                        tags = tag_image(image_path)
 
-                        dup_count = db2.query(Image).filter(Image.hash_id == image.hash_id).count()
-                        print(f"Queue: Tagged hash for image {image.id} ({dup_count} copies): {tags[:80]}...")
-                    finally:
-                        db2.close()
+                        if not tags:
+                            raise ValueError("AI returned empty tags")
 
-                except Exception as e:
-                    print(f"Queue: Error tagging image {image.id}: {e}")
-                    db3 = SessionLocal()
-                    try:
-                        q_item = db3.query(TagQueue).filter(
-                            TagQueue.image_id == image.id, TagQueue.status == "processing"
-                        ).first()
-                        if q_item:
-                            q_item.status = "error"
-                            q_item.error_msg = str(e)[:200]
-                        db3.commit()
-                    finally:
-                        db3.close()
+                        db2 = SessionLocal()
+                        try:
+                            # Write tags to the hash (shared by all duplicates)
+                            h = db2.query(ImageHash).filter(ImageHash.id == image_hash_id).first()
+                            if h:
+                                h.tags = tags
+                            # Mark queue item as done
+                            q_item = db2.query(TagQueue).filter(
+                                TagQueue.image_id == image_id, TagQueue.status == "processing"
+                            ).first()
+                            if q_item:
+                                q_item.status = "done"
+                            db2.commit()
+
+                            dup_count = db2.query(Image).filter(Image.hash_id == image_hash_id).count()
+                            print(f"Queue: Tagged hash for image {image_id} ({dup_count} copies): {tags[:80]}...")
+                        finally:
+                            db2.close()
+
+                    except Exception as e:
+                        print(f"Queue: Error tagging image {image_id}: {e}")
+                        db3 = SessionLocal()
+                        try:
+                            q_item = db3.query(TagQueue).filter(
+                                TagQueue.image_id == image_id, TagQueue.status == "processing"
+                            ).first()
+                            if q_item:
+                                q_item.status = "error"
+                                q_item.error_msg = str(e)[:200]
+                            db3.commit()
+                        finally:
+                            db3.close()
+
+            except Exception as e:
+                # Catch-all: prevent silent thread death
+                print(f"Queue: UNEXPECTED error in worker loop: {e}")
+                import traceback
+                traceback.print_exc()
+                time.sleep(2)  # Brief pause before retrying
 
         self._current_image_id = None
         if not self._stop_event.is_set():

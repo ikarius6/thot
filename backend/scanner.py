@@ -2,6 +2,7 @@ import os
 import imagehash
 from PIL import Image
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from database import Image as DBImage, ImageHash, SessionLocal
 
 
@@ -29,15 +30,32 @@ def scan_file(file_path: str, db: Session):
             # Find or create the ImageHash entry
             hash_entry = db.query(ImageHash).filter(ImageHash.phash == phash_value).first()
             if not hash_entry:
-                hash_entry = ImageHash(phash=phash_value)
-                db.add(hash_entry)
-                db.flush()  # Get the id
+                try:
+                    hash_entry = ImageHash(phash=phash_value)
+                    db.add(hash_entry)
+                    db.flush()  # Get the id
+                except IntegrityError:
+                    db.rollback()
+                    hash_entry = db.query(ImageHash).filter(ImageHash.phash == phash_value).first()
+                    if not hash_entry:
+                        print(f"Skipping {file_path}: failed to resolve hash {phash_value}")
+                        return None
 
             # Create the image record linked to the hash
             file_name = os.path.basename(file_path)
             new_image = DBImage(path=file_path, filename=file_name, hash_id=hash_entry.id)
             db.add(new_image)
-            db.commit()
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                # Path already exists — return the existing record
+                existing = db.query(DBImage).filter(DBImage.path == file_path).first()
+                if existing:
+                    print(f"Already in DB: {file_name}")
+                    return existing
+                print(f"Skipping {file_path}: duplicate path but could not re-query")
+                return None
 
             # Generate thumbnail
             if img.mode != 'RGB':

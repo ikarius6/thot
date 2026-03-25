@@ -6,6 +6,9 @@ import tempfile
 from PIL import Image as PILImage
 from database import SessionLocal, Settings
 
+# Ollama client with timeout to prevent infinite hangs
+_ollama_client = ollama.Client(timeout=300.0)  # 5 minute timeout
+
 def get_model_name() -> str:
     db = SessionLocal()
     try:
@@ -105,7 +108,7 @@ def tag_image(image_path: str) -> str:
     try:
         model_name = get_model_name()
         print(f"Tagging with model: {model_name}")
-        res = ollama.chat(
+        res = _ollama_client.chat(
             model=model_name,
             messages=[
                 {
@@ -130,7 +133,7 @@ def tag_image(image_path: str) -> str:
 
     except Exception as e:
         print(f"Error tagging {image_path}: {e}")
-        return ""
+        raise
     finally:
         # Clean up temp file if we created one
         if compatible_path != image_path:
